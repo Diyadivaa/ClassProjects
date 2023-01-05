@@ -1,0 +1,231 @@
+'''
+# Question 13.2
+
+In this problem we simulate a simplified airport security system at a busy airport. 
+Passengers arrive according to a Poisson distribution with λ1 = 5 per minute (i.e., mean interarrival rate 1 = 0.2 minutes) 
+    to the ID/boarding-pass check queue, where there are several servers who each have exponential service time with mean rate 2 = 0.75 minutes. 
+    [Hint: model them as one block that has more than one resource.]  
+
+After that, the passengers are assigned to the shortest of the several personal-check queues, where they go through the personal scanner 
+    (time is uniformly distributed between 0.5 minutes and 1 minute). 
+
+Build a simulation of the system, 
+    and then vary the number of ID/boarding-pass checkers and personal-check queues 
+    to determine how many are needed to keep average wait times below 15 minutes.  
+    [If you’re using SimPy, or if you have access to a non-student version of Arena, you can use λ1 = 50 to simulate a busier airport.]
+
+First, some setup code:
+'''
+
+import random
+import simpy
+from numpy import mean
+from random import expovariate
+
+RANDOM_SEED = 22
+NUM_IDCHECKERS = 4          # Number of people checking IDs and boarding passes
+MEAN_IDCHECKTIME = 0.75     # Minutes it takes to check an ID (random dist with this mean)
+NUM_PSCANNERS = 5           # Number of scanning devices
+MIN_PSCANTIME = 0.5         # minimum time for personal scanners
+MAX_PSCANTIME = 1           # max time for personal scanners (exponential dist between these two)
+MEAN_T_RATE = 5             # base rate for Poisson distribution
+MEAN_T_INTER = 0.2          # base interarrival rate for Poisson distribution
+SIM_TIME = 180              # Max simulation time in minutes
+
+'''
+So it looks like we will need two resource classes.  One for ID Checkers and another one for scanners.
+'''
+
+class IDCheck(object):
+    """A station with a limited number of slots for passengers to take.
+        If one isn't available, they will have to wait.
+        Time in the station determined by the checktime distribution
+    """
+    def __init__(self, env, num_checkers, checktime):
+        self.env = env
+        self.machine = simpy.Resource(env, num_checkers)
+        self.checktime = round(expovariate(1.0 / checktime),3)
+
+    def check(self, passenger):
+        """The actual check process, which receives a passenger
+            and holds it for a randomized time. """
+        
+        #self.checktime = MEAN_IDCHECKTIME
+        #self.checktime = round(random.uniform(0,2*MEAN_IDCHECKTIME),3)
+        yield self.env.timeout(self.checktime)
+        
+        #print(passenger,'takes',self.checktime,'mins to clear ID Check')
+
+class PScanner(object):
+    """Another station with a limited number of slots for passengers to take.
+        If one isn't available, they will have to wait.
+        Time in the station determined by the scantime distribution.
+    """
+    def __init__(self, env, num_scanners, scantime):
+        self.env = env
+        self.machine = simpy.Resource(self.env, num_scanners)
+        self.scantime = round(scantime + random.uniform(0,scantime),2)
+
+    def scan(self, passenger):
+        """The actual scan process, which receives a passenger
+            and holds it for a randomized time."""
+        
+        #self.scantime = MIN_PSCANTIME
+        #self.scantime = round(MIN_PSCANTIME + random.uniform(0,MAX_PSCANTIME-MIN_PSCANTIME),2)
+        yield self.env.timeout(self.scantime)
+        
+        #print(passenger,'takes',self.scantime,'mins to clear Scanner')
+
+'''
+Then we define the passenger "process" and what happens during setup
+'''
+
+def passenger(env, name, IDstation, Scanstation):
+    """The passenger process arrives at the IDStation,
+        waits for it to finish, then goes to the Scanner.
+    """
+    arrival_time = env.now
+
+    #print('%s arrives at the ID line at %.2f.' % (name, arrival_time))
+    with IDstation.machine.request() as request:
+        yield request
+
+        ID_starttime = env.now
+
+        #print('%s enters ID check at %.2f.' % (name, ID_starttime))
+        yield env.process(IDstation.check(name))
+
+        #print('%s leaves ID check at %.2f.' % (name, env.now))
+        
+    #print('%s arrives at the Scanner at %.2f.' % (name, env.now))
+    with Scanstation.machine.request() as request:
+        yield request
+
+        scanner_starttime = env.now
+
+        #print('%s enters the Scanner at %.2f.' % (name, scanner_starttime))
+        yield env.process(Scanstation.scan(name))
+
+        scanner_endtime = env.now
+
+        #print('%s leaves the Scanner at %.2f.' % (name, scanner_endtime))
+
+    pass_totaltime = scanner_endtime - arrival_time
+    #print('%s total time of %.2f.' % (name, pass_totaltime))
+
+    # add this totaltime to a global array variable
+    Pass_Time_List.append(pass_totaltime)
+
+
+def setup(env, num_IDstats, num_Scanners, checktime, scantime, t_inter):
+    """Create the stations and generate passengers"""
+    
+    # Create the ID check stations
+    IDStations = IDCheck(env, num_IDstats, checktime)
+
+    # Create the Scan stations
+    ScanStations = PScanner(env, num_Scanners, scantime)
+
+    # Create 1 initial passenger
+    i = 1
+    env.process(passenger(env, 'Passenger %d' % i, IDStations, ScanStations))
+
+    # More passengers arrive while the simulation is running
+    while True:
+        i += 1
+        Total_Pass.append('Passenger %d' % i)
+        yield env.timeout(expovariate(1.0 / t_inter))
+        env.process(passenger(env, 'Passenger %d' % i, IDStations, ScanStations))
+
+'''
+Code below will set up and run the simulation with the specified number of checkers and scanners,
+repeated 25x with different random seeds, to demonstrate the variation in simulation results just from randomness.
+'''
+
+# reset the array of times to blank
+Avg_Times = []      # average wait time of each randomized trial + parameters
+Avg_Queue = []      # number of people still in line at the end, as a snapshot of queue size
+
+for seed in range(101,125):
+
+    # run each trial with new random seed, and every combination of parameters with the same 25 seeds
+    random.seed(seed)
+    # Create an environment and start the setup process
+    env = simpy.Environment()
+    env.process(setup(env, NUM_IDCHECKERS, NUM_PSCANNERS, MEAN_IDCHECKTIME, MIN_PSCANTIME, MEAN_T_INTER))
+
+    Pass_Time_List = []         # Array for storing passenger total times from arrival to clearing the scanner
+    Total_Pass = []             # Array for storing names of passengers who have arrived at the airport
+
+    # Execute!
+    env.run(until=SIM_TIME)
+
+    #print('With seed =',seed)
+    #print('Total number of passengers through security', len(Pass_Time_List))
+    #print('Average passenger time to clear security', round(mean(Pass_Time_List),1),'minutes')
+    #print('Passengers still waiting:', len(Total_Pass)-len(Pass_Time_List))
+    Avg_Queue.append(len(Total_Pass)-len(Pass_Time_List))
+    Avg_Times.append(round(mean(Pass_Time_List),1))
+
+# write the randomized trial results to a file for later analysis
+with open('AirportSimTimes.txt', 'w', encoding='utf-8') as f:
+    for time in Avg_Times:
+        f.write('%s\n' % str(time))
+
+print('With',NUM_IDCHECKERS,'ID checkers and',NUM_PSCANNERS,'Scanners, average of 25 trials was',round(mean(Avg_Times),1),'minute wait time')
+print('With',NUM_IDCHECKERS,'ID checkers and',NUM_PSCANNERS,'Scanners, final queue average =',round(mean(Avg_Queue)),'passengers waiting')
+
+
+'''
+Code below will run the simulation through multiple combinations of checkers and scanners, 
+averaging the results of the 25 random trials of each, and record the results for later analysis.
+'''
+
+
+Sim_Times = []              # Array for average results of all random trials, for each parameter combination
+Sim_Queue = []              # Array for average # of passengers in queue at sim end, for each parameter combination
+
+maxcheckers = 8
+maxscanners = 8
+ncheckers = 0
+nscanners = 0
+
+# Setup and start the simulation
+print('Airport Arrival Simulation')
+print('25 Randomized Trials of each Scenario')
+#print('Checkers Scanners AvgWaitTime EndQueue')
+
+for ncheckers in range(1,maxcheckers):
+
+    for nscanners in range(1,maxscanners):
+
+        # reset the array of times to blank
+        Avg_Times = []      # average wait time of each randomized trial + parameters
+        Avg_Queue = []      # number of people still in line at the end, as a snapshot of queue size
+
+        for seed in range(101,125):
+
+            # run each trial with new random seed, and every combination of parameters with the same 25 seeds
+            random.seed(seed)
+            # Create an environment and start the setup process
+            env = simpy.Environment()
+            env.process(setup(env, ncheckers, nscanners, MEAN_IDCHECKTIME, MIN_PSCANTIME, MEAN_T_INTER))
+        
+            Pass_Time_List = []         # Array for storing passenger total times from arrival to clearing the scanner
+            Total_Pass = []             # Array for storing names of passengers who have arrived at the airport
+
+            # Execute!
+            env.run(until=SIM_TIME)
+
+            #print('With seed =',seed)
+            #print('Total number of passengers through security', len(Pass_Time_List))
+            #print('Average passenger time to clear security', round(mean(Pass_Time_List),1),'minutes')
+            #print('Passengers still waiting:', len(Total_Pass)-len(Pass_Time_List))
+            Avg_Queue.append(len(Total_Pass)-len(Pass_Time_List))
+            Avg_Times.append(round(mean(Pass_Time_List),1))
+
+        Sim_Times.append(round(mean(Avg_Times),1))
+        Sim_Queue.append(round(mean(Avg_Queue),0))
+        print('With',ncheckers,'ID checkers and',nscanners,'Scanners, average of 25 trials =',round(mean(Avg_Times),1),'minute wait time')
+        #print('With',ncheckers,'ID checkers and',nscanners,'Scanners, average of',round(mean(Avg_Queue)),'were left waiting')
+        #print(ncheckers,nscanners,round(mean(Avg_Times),1),round(mean(Avg_Queue)))
